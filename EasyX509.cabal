@@ -30,6 +30,7 @@ library
                      , type-iso
                      , bytestring
                      , text
+                     , transformers
   default-language:    Haskell2010
 
 executable easy-x509-exe

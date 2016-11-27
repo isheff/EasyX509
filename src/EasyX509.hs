@@ -8,18 +8,21 @@ module EasyX509 (
   ,bytestring_to_x509
   ,x509_verify
   ,x509_sign
+  ,verify
   ) where
 
-import Control.Monad  (liftM, liftM2)
+import Control.Monad.Trans.Maybe (MaybeT(MaybeT))
 import Crypto.PubKey.RSA.Types (Error(MessageSizeIncorrect, MessageTooLong, MessageNotRecognized, SignatureTooLong, InvalidParameters))
-import Crypto.PubKey.RSA.PKCS15 (verify, HashAlgorithmASN1, signSafer)
-import Crypto.Random (DRG, withDRG)
-import Data.ASN1.Object (ASN1Object)
-import Data.ByteString.Lazy (ByteString, toStrict, fromStrict, fromChunks)
+import Crypto.PubKey.RSA.PKCS15 (HashAlgorithmASN1, signSafer)
+import qualified Crypto.PubKey.RSA.PKCS15 as Cryptonite (verify)
+import Crypto.Random (DRG, withDRG, getSystemDRG)
 import Crypto.PubKey.OpenSsh (decodePrivate, OpenSshPrivateKey(OpenSshPrivateKeyRsa))
 import qualified Crypto.PubKey.RSA.Types as Cryptonite (PrivateKey(PrivateKey), PublicKey(PublicKey))
 import qualified Crypto.Types.PubKey.RSA as OpenSSL (PrivateKey(PrivateKey), PublicKey(PublicKey))
-import Data.Either (rights, lefts)
+import Data.ASN1.Object (ASN1Object)
+import Data.ByteString.Lazy (ByteString, toStrict, fromStrict, fromChunks)
+import qualified Data.ByteString.Lazy as ByteString (readFile)
+import Data.Either (either, rights, lefts)
 import Data.List (intercalate)
 import Data.PEM (pemParseLBS, pemContent, PEM(pemName, pemContent))
 import Data.Text.Lazy    (pack)
@@ -70,7 +73,7 @@ bytestring_to_rsa_privkey b = case decodePrivate (toStrict b) of
 x509_verify :: (HashAlgorithmASN1 h) => (Maybe h) -> Certificate -> ByteString -> ByteString -> Maybe String
 x509_verify hash_alg certificate message signature =
   case certPubKey certificate of
-    PubKeyRSA public_key -> if verify hash_alg public_key (toStrict message) (toStrict signature)
+    PubKeyRSA public_key -> if Cryptonite.verify hash_alg public_key (toStrict message) (toStrict signature)
                                then Nothing
                                else Just "key appears to be correctly formatted, but the message simply did not verify"
     PubKeyDSA _ -> Just "This DSA key should in theory be doable. It's a Crypto.PubKey.DSA.PublicKey, but I have to figure out how to parse signatures for this kind of thing."
@@ -88,3 +91,35 @@ x509_sign m_hash g (PrivKeyRSA private_key) message = case fst $ withDRG g $ sig
   (Right b) -> Right $ fromStrict b
 x509_sign _ _ _ _ = Left "I do not know how to deal with non-RSA private keys at this time."
 
+class Signer a where
+  sign :: (HashAlgorithmASN1 h, DRG gen) => (Maybe h) -> gen -> a -> ByteString -> (Either String ByteString)
+
+instance Signer PrivKey where
+  sign = x509_sign
+
+instance Signer ByteString where
+  sign h g b m = case bytestring_to_rsa_privkey b of
+                   Left  s -> Left s
+                   Right k -> sign h g k m
+
+sign_with_key_file :: (HashAlgorithmASN1 h) => (Maybe h) -> FilePath -> ByteString -> (IO (Either String ByteString))
+sign_with_key_file h f m = do { g <- getSystemDRG
+                              ; k <- ByteString.readFile f
+                              ; return $ sign h g k m}
+
+class (Monad m) => Verifier a m  where
+  verify :: (HashAlgorithmASN1 h) => (Maybe h) -> a -> ByteString ->  ByteString -> m String
+
+instance Verifier Certificate Maybe where
+  verify = x509_verify
+
+instance Verifier ByteString Maybe where
+  verify m_hash public_key message signature =
+    case bytestring_to_x509 public_key of
+      Left s -> Just s
+      Right k -> x509_verify m_hash k message signature
+
+instance Verifier FilePath (MaybeT IO) where
+  verify m_hash file message signature = MaybeT (
+    do { public_key <- ByteString.readFile file
+       ; return (verify m_hash public_key message signature)})
