@@ -9,6 +9,8 @@ module EasyX509 (
   ,x509_verify
   ,x509_sign
   ,verify
+  ,sign
+  ,sign_with_key_file
   ) where
 
 import Control.Monad.Trans.Maybe (MaybeT(MaybeT))
