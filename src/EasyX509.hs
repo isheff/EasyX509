@@ -11,6 +11,7 @@ module EasyX509 (
   ,verify
   ,sign
   ,sign_with_key_file
+  ,Signer
   ) where
 
 import Control.Monad.Trans.Maybe (MaybeT(MaybeT))
